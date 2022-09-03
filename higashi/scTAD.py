@@ -12,6 +12,7 @@ def parse_args():
 	parser = argparse.ArgumentParser(description="Higashi single cell TAD calling")
 	parser.add_argument('-c', '--config', type=str, default="../config_dir/config_ercker_10Kb.JSON")
 	parser.add_argument('-n', '--neighbor', default=False, action='store_true')
+	parser.add_argument('-r', '--raw', default=False, action='store_true')
 	parser.add_argument('-o', '--output', type=str, default="scTAD")
 	parser.add_argument('--window_ins', type=int, default=500000)
 	parser.add_argument('--window_tad', type=int, default=500000)
@@ -76,27 +77,38 @@ def gen_tad(chrom):
 	sc_border = []
 	sc_border_indice = []
 	
-	if args.neighbor:
+	if args.raw:
+		cell_list = trange(len(origin_sparse))
+	elif args.neighbor:
 		impute_f = h5py.File(os.path.join(temp_dir, "%s_%s_nbr_%d_impute.hdf5" % (chrom, embedding_name, neighbor_num)),
 		               "r")
+		coordinates = impute_f['coordinates']
+		xs, ys = coordinates[:, 0], coordinates[:, 1]
+		cell_list = trange(len(list(impute_f.keys())) - 1)
 	else:
 		impute_f = h5py.File(os.path.join(temp_dir, "%s_%s_nbr_0_impute.hdf5" % (chrom, embedding_name)), "r")
+		coordinates = impute_f['coordinates']
+		xs, ys = coordinates[:, 0], coordinates[:, 1]
+		cell_list = trange(len(list(impute_f.keys())) - 1)
 		
-	coordinates = impute_f['coordinates']
-	xs, ys = coordinates[:, 0], coordinates[:, 1]
-	
-	cell_list = trange(len(list(impute_f.keys())) - 1)
 	m1 = np.zeros((size, size))
 	for i in cell_list:
 		m1 *= 0.0
 		
-		proba = np.array(impute_f["cell_%d" % i])
-		m1[xs.astype('int'), ys.astype('int')] += proba
-		m1 = m1 + m1.T
+		if args.raw:
+			m1 = origin_sparse[i].toarray()
+			proba = np.triu(m1)
+			half_diag = np.diag(m1)/2
+			np.fill_diagonal(proba, half_diag)
+
+		else:
+			proba = np.array(impute_f["cell_%d" % i])
+			m1[xs.astype('int'), ys.astype('int')] += proba
+			m1 = m1 + m1.T
+		
 		temp = m1
 		temp *= mask
 		temp = sqrt_norm(temp)
-		
 		
 		bulk1 += proba
 		score = insulation_score(temp, windowsize=args.window_ins, res=res)
@@ -111,7 +123,10 @@ def gen_tad(chrom):
 	
 	sc_score = np.array(sc_score)
 	sc_border_indice = np.array(sc_border_indice)
-	bulk = np.array(csr_matrix((bulk1, (xs, ys)), shape=(size, size)).todense())
+	if args.raw:
+		bulk = bulk1
+	else:
+		bulk = np.array(csr_matrix((bulk1, (xs, ys)), shape=(size, size)).todense())
 	bulk *= mask
 	bulk = sqrt_norm(bulk)
 	bulk_score = insulation_score(bulk, windowsize=args.window_ins, res=res)
